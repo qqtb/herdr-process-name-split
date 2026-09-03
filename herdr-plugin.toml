@@ -1,0 +1,64 @@
+id = "process-name-split"
+name = "Process Name Split"
+version = "1.0.0"
+min_herdr_version = "0.7.0"
+description = "Show the running process name (short, informative) of the currently selected split panel inside the tab."
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "sync"
+title = "Sync process tab names now"
+description = "Update all tab labels to the running process of the tab's selected split panel."
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "tab.created"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "tab.focused"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "tab.moved"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "pane.created"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "pane.closed"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "pane.exited"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "pane.focused"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "pane.moved"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "layout.updated"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "workspace.focused"
+command = ["node", "sync.mts"]
+
+[[events]]
+on = "worktree.opened"
+command = ["node", "sync.mts"]

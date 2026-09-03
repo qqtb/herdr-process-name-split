@@ -1,0 +1,27 @@
+{
+  "name": "herdr-process-name-split",
+  "version": "1.0.0",
+  "description": "Show the running process name (short, informative) of the currently selected split panel inside each tab.",
+  "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "type": "module",
+  "scripts": {
+    "check": "tsc",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "keywords": [
+    "herdr",
+    "herdr-plugin",
+    "terminal",
+    "tab-names",
+    "process"
+  ],
+  "author": "tbqq",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.8.0"
+  }
+}
