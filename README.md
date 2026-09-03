@@ -1,6 +1,6 @@
 # herdr-process-name-split
 
-A zero-dependency [Herdr](https://herdr.dev/) plugin that shows what every terminal split is doing.
+[Herdr](https://herdr.dev/) plugin that shows what every terminal split is doing.
 
 - **Idle pane:** show its current directory.
 - **Busy pane:** show its foreground command.
@@ -357,16 +357,6 @@ The fish hook triggers on `fish_preexec`, `fish_postexec`, and `PWD` changes.
 8. Atomic state writes and an inter-process lock prevent simultaneous Herdr events from corrupting label ownership.
 
 The daemon reconnects across brief socket interruptions and exits if the Herdr server remains unavailable. Event/action invocations ensure it starts when a plugin is linked after Herdr has already started.
-
-## Coexisting with other naming plugins
-
-Pane mode does not modify tabs after migrating labels previously owned by this plugin, so it can coexist with a tab-naming plugin.
-
-In `target: "tab"` mode, disable other plugins that rename tabs to avoid competing updates. For example:
-
-```bash
-herdr plugin disable dev-shimada.auto-tab-name
-```
 
 ## Troubleshooting
 
