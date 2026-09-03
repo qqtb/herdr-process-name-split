@@ -1,0 +1,9 @@
+{
+  "target": "pane",
+  "format": "{process}",
+  "shell_idle": "dir",
+  "idle_path_style": "basename",
+  "max_length": 25,
+  "overwrite_manual": false,
+  "include_args": true
+}

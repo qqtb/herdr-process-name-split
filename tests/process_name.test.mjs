@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import {
   cleanBaseName,
   truncate,
+  formatPath,
   parseNonFlagArgs,
   formatProcessItem,
+  extractProcessResolution,
   extractProcessName,
   formatLabel,
 } from "../sync.mts";
@@ -21,6 +25,18 @@ test("truncate truncates long strings with ellipsis", () => {
   assert.equal(truncate("short", 10), "short");
   assert.equal(truncate("this is a very long command", 12), "this is a v…");
   assert.equal(truncate("unlimited", 0), "unlimited");
+});
+
+test("formatPath handles basename, relative, and compact styles", () => {
+  const home = os.homedir();
+  const sampleDir = path.join(home, "code", "project", "client");
+
+  assert.equal(formatPath(sampleDir, "basename"), "client");
+  assert.equal(formatPath(sampleDir, "relative"), "~/code/project/client");
+  assert.equal(formatPath(sampleDir, "compact"), "project/client");
+  assert.equal(formatPath(home, "basename"), "~");
+  assert.equal(formatPath(home, "relative"), "~");
+  assert.equal(formatPath(home, "compact"), "~");
 });
 
 test("parseNonFlagArgs filters flags and keeps meaningful arguments", () => {
@@ -121,55 +137,66 @@ test("formatProcessItem prioritizes detected agent", () => {
   );
 });
 
-test("extractProcessName handles idle shells vs active commands", () => {
+test("extractProcessResolution shows current path when idle, and running process when active", () => {
   const dummyPane = {
     pane_id: "w1:p1",
     tab_id: "w1:t1",
     focused: true,
-    cwd: "/Users/alice/projects/api",
+    cwd: "/Users/alice/projects/client",
   };
   const config = {
     format: "{process}",
-    shellIdle: "process",
+    shellIdle: "dir",
+    idlePathStyle: "basename",
     maxLength: 25,
     overwriteManual: false,
     includeArgs: true,
   };
 
-  // Idle shell
+  // 1. Idle shell -> displays current path (client)
   const idleInfo = {
     pane_id: "w1:p1",
     shell_pid: 100,
     foreground_process_group_id: 100,
     foreground_processes: [{ pid: 100, name: "zsh", argv0: "-zsh", argv: ["-zsh"] }],
   };
-  assert.equal(extractProcessName(idleInfo, dummyPane, config), "zsh");
+  const idleRes = extractProcessResolution(idleInfo, dummyPane, config);
+  assert.equal(idleRes.isRunning, false);
+  assert.equal(idleRes.name, "client");
 
-  // Idle shell with shellIdle = 'dir'
-  assert.equal(
-    extractProcessName(idleInfo, dummyPane, { ...config, shellIdle: "dir" }),
-    "api"
+  // shell_pid is unavailable on some platforms; a lone known shell is idle.
+  const idleWithoutShellPid = extractProcessResolution(
+    {
+      pane_id: "w1:p1",
+      foreground_processes: [{ pid: 100, name: "zsh", argv0: "-zsh" }],
+    },
+    dummyPane,
+    config
   );
+  assert.equal(idleWithoutShellPid.isRunning, false);
+  assert.equal(idleWithoutShellPid.name, "client");
 
-  // Active command running under shell
+  // 2. Running command (e.g. make xxx) -> displays process name
   const activeInfo = {
     pane_id: "w1:p1",
     shell_pid: 100,
     foreground_process_group_id: 200,
     foreground_processes: [
       { pid: 100, name: "zsh", argv0: "-zsh", argv: ["-zsh"] },
-      { pid: 200, name: "cargo", argv0: "cargo", argv: ["cargo", "test", "--workspace"] },
-      { pid: 205, name: "cargo-test", argv0: "cargo-test", argv: ["target/debug/deps/test-123"] },
+      { pid: 200, name: "make", argv0: "make", argv: ["make", "debug-web"] },
     ],
   };
-  assert.equal(extractProcessName(activeInfo, dummyPane, config), "cargo test");
+  const activeRes = extractProcessResolution(activeInfo, dummyPane, config);
+  assert.equal(activeRes.isRunning, true);
+  assert.equal(activeRes.name, "make debug-web");
 });
 
-test("extractProcessName un-nests shell wrappers (sh -c)", () => {
+test("extractProcessResolution un-nests shell wrappers (sh -c)", () => {
   const dummyPane = { pane_id: "w1:p1", tab_id: "w1:t1", focused: true };
   const config = {
     format: "{process}",
-    shellIdle: "process",
+    shellIdle: "dir",
+    idlePathStyle: "basename",
     maxLength: 25,
     overwriteManual: false,
     includeArgs: true,
@@ -185,23 +212,43 @@ test("extractProcessName un-nests shell wrappers (sh -c)", () => {
       { pid: 201, name: "overmind", argv0: "overmind", argv: ["overmind", "start"] },
     ],
   };
-  assert.equal(extractProcessName(wrappedInfo, dummyPane, config), "overmind start");
+  const res = extractProcessResolution(wrappedInfo, dummyPane, config);
+  assert.equal(res.isRunning, true);
+  assert.equal(res.name, "overmind start");
 });
 
-test("formatLabel applies templates and truncates", () => {
+test("formatLabel applies templates and formats path when idle vs running", () => {
   const dummyPane = {
     pane_id: "w1:p1",
     tab_id: "w1:t1",
     focused: true,
-    cwd: "/Users/alice/projects/frontend",
+    cwd: "/Users/alice/projects/client",
   };
 
-  const cfg1 = { format: "{process}", maxLength: 20, shellIdle: "process", overwriteManual: false, includeArgs: true };
-  assert.equal(formatLabel("npm run dev", dummyPane, cfg1), "npm run dev");
+  const cfg1 = {
+    format: "{process}",
+    shellIdle: "dir",
+    idlePathStyle: "basename",
+    maxLength: 25,
+    overwriteManual: false,
+    includeArgs: true,
+  };
+  // When idle: shows path
+  assert.equal(formatLabel({ name: "client", isRunning: false }, dummyPane, cfg1), "client");
+  // When running: shows process
+  assert.equal(formatLabel({ name: "make debug-web", isRunning: true }, dummyPane, cfg1), "make debug-web");
 
-  const cfg2 = { format: "{dir}: {process}", maxLength: 30, shellIdle: "process", overwriteManual: false, includeArgs: true };
-  assert.equal(formatLabel("cargo test", dummyPane, cfg2), "frontend: cargo test");
-
-  const cfg3 = { format: "{process}", maxLength: 8, shellIdle: "process", overwriteManual: false, includeArgs: true };
-  assert.equal(formatLabel("make debug-web", dummyPane, cfg3), "make de…");
+  // Format with {dir}: {process}
+  const cfg2 = {
+    format: "{dir}: {process}",
+    shellIdle: "dir",
+    idlePathStyle: "basename",
+    maxLength: 30,
+    overwriteManual: false,
+    includeArgs: true,
+  };
+  // Running: client: make debug-web
+  assert.equal(formatLabel({ name: "make debug-web", isRunning: true }, dummyPane, cfg2), "client: make debug-web");
+  // Idle: avoids "client: client", shows "client"
+  assert.equal(formatLabel({ name: "client", isRunning: false }, dummyPane, cfg2), "client");
 });

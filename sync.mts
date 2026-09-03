@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Process Name Split: set each tab's label to the running process name
-// (short, informative) of the tab's currently selected split panel.
+// Process Name Split: label each pane border with its current path when idle
+// or a short, informative foreground process name while a command is running.
+// Legacy focused-pane tab labels remain available through configuration.
 //
 // Executed directly by Node.js (22.18+ / 24+) via native type stripping.
 // Zero dependencies, zero build step.
@@ -10,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { startDaemon } from "./daemon-control.mts";
 
 export interface ProcessItem {
   pid: number;
@@ -32,6 +34,7 @@ export interface PaneInfo {
   tab_id: string;
   workspace_id?: string;
   focused: boolean;
+  label?: string | null;
   agent?: string | null;
   agent_status?: string | null;
   terminal_title?: string | null;
@@ -51,6 +54,7 @@ export interface TabInfo {
   tab_id: string;
   workspace_id?: string;
   label: string;
+  number?: number;
   focused?: boolean;
 }
 
@@ -68,10 +72,17 @@ export interface SnapshotResult {
 
 export interface Config {
   format: string;
-  shellIdle: "process" | "dir" | "shell";
+  target: "pane" | "tab";
+  shellIdle: "dir" | "path" | "process" | "shell";
+  idlePathStyle: "basename" | "relative" | "compact";
   maxLength: number;
   overwriteManual: boolean;
   includeArgs: boolean;
+}
+
+export interface ProcessResolution {
+  name: string;
+  isRunning: boolean;
 }
 
 export type OwnedLabels = Record<string, string>;
@@ -190,6 +201,40 @@ export function truncate(text: string, maxLength: number): string {
   return text;
 }
 
+export function formatPath(
+  cwd: string | null | undefined,
+  style: "basename" | "relative" | "compact" = "basename"
+): string {
+  if (!cwd) return "~";
+  const home = os.homedir();
+  if (cwd === home) return "~";
+
+  const isInsideHome = cwd.startsWith(`${home}${path.sep}`);
+
+  if (style === "relative") {
+    if (isInsideHome) {
+      return `~${cwd.slice(home.length)}`;
+    }
+    return cwd;
+  }
+
+  if (style === "compact") {
+    let rel = cwd;
+    if (isInsideHome) {
+      rel = `~${cwd.slice(home.length)}`;
+    }
+    const parts = rel.split(path.sep).filter(Boolean);
+    if (parts.length > 2) {
+      return parts.slice(-2).join("/");
+    }
+    return rel;
+  }
+
+  // default: basename
+  const base = path.basename(cwd);
+  return base || cwd;
+}
+
 export function parseNonFlagArgs(rawArgs: string[]): string[] {
   const nonFlagArgs: string[] = [];
   let skipNext = false;
@@ -298,43 +343,57 @@ export function formatProcessItem(
   return base;
 }
 
-export function extractProcessName(
+export function extractProcessResolution(
   processInfo: ProcessInfo | null | undefined,
   pane: PaneInfo,
   config: Config
-): string {
+): ProcessResolution {
   const agent = pane.agent;
   const procs = processInfo?.foreground_processes || [];
   const shellPid = processInfo?.shell_pid;
   const fgGroupId = processInfo?.foreground_process_group_id;
+  const idlePath = formatPath(pane.foreground_cwd || pane.cwd, config.idlePathStyle);
+
+  // If an agent is detected by Herdr
+  if (agent) {
+    return { name: agent, isRunning: true };
+  }
 
   // If no process info could be queried
   if (!processInfo || procs.length === 0) {
-    if (agent) return agent;
     if (pane.terminal_title_stripped && !pane.terminal_title_stripped.includes("@")) {
-      return truncate(pane.terminal_title_stripped, config.maxLength);
+      return { name: truncate(pane.terminal_title_stripped, config.maxLength), isRunning: true };
     }
-    return config.shellIdle === "dir" ? getDirName(pane.foreground_cwd || pane.cwd) : "shell";
+    return {
+      name: config.shellIdle === "process" ? "shell" : idlePath,
+      isRunning: false,
+    };
   }
 
-  // Only shell running (idle at prompt)
-  if (procs.length === 1 && procs[0].pid === shellPid) {
-    if (config.shellIdle === "dir") {
-      return getDirName(pane.foreground_cwd || pane.cwd);
+  // Only a shell is running (idle at its prompt). Some platforms can identify
+  // the shell by name but do not expose shell_pid.
+  if (
+    procs.length === 1 &&
+    (procs[0].pid === shellPid ||
+      SHELLS.has(cleanBaseName(procs[0].argv0 || procs[0].name || "")))
+  ) {
+    if (config.shellIdle === "process") {
+      return { name: formatProcessItem(procs[0], null, false), isRunning: false };
     }
     if (config.shellIdle === "shell") {
-      return "shell";
+      return { name: "shell", isRunning: false };
     }
-    return formatProcessItem(procs[0], agent, false);
+    // Default: display the current path when no process is running
+    return { name: idlePath, isRunning: false };
   }
 
   // Filter out the shell itself
   const nonShells = procs.filter((p) => p.pid !== shellPid);
   if (nonShells.length === 0) {
-    if (config.shellIdle === "dir") {
-      return getDirName(pane.foreground_cwd || pane.cwd);
+    if (config.shellIdle === "process") {
+      return { name: "shell", isRunning: false };
     }
-    return "shell";
+    return { name: idlePath, isRunning: false };
   }
 
   // Find the foreground group leader or the root non-shell process
@@ -351,27 +410,45 @@ export function extractProcessName(
     }
   }
 
-  return formatProcessItem(target, agent, config.includeArgs);
+  const name = formatProcessItem(target, agent, config.includeArgs);
+  return { name, isRunning: true };
 }
 
-export function getDirName(cwd: string | null | undefined): string {
-  if (!cwd) return "~";
-  if (cwd === os.homedir()) return "~";
-  const base = path.basename(cwd);
-  return base || cwd;
-}
-
-export function formatLabel(
-  processName: string,
+export function extractProcessName(
+  processInfo: ProcessInfo | null | undefined,
   pane: PaneInfo,
   config: Config
 ): string {
-  const dirName = getDirName(pane.foreground_cwd || pane.cwd);
-  let label = config.format
-    .replace(/\{process\}/g, processName)
-    .replace(/\{dir\}/g, dirName)
-    .replace(/\{pane_id\}/g, pane.pane_id)
-    .replace(/\{tab_id\}/g, pane.tab_id);
+  return extractProcessResolution(processInfo, pane, config).name;
+}
+
+export function formatLabel(
+  resolution: ProcessResolution,
+  pane: PaneInfo,
+  config: Config
+): string {
+  const dirName = formatPath(pane.foreground_cwd || pane.cwd, "basename");
+  const pathName = formatPath(pane.foreground_cwd || pane.cwd, config.idlePathStyle);
+  let label: string;
+
+  if (!resolution.isRunning && config.format.includes("{process}") && config.format.includes("{dir}")) {
+    // Avoid duplicating e.g. "client: client" when idle
+    label = config.format
+      .replace(/\{dir\}\s*:\s*\{process\}/g, dirName)
+      .replace(/\{process\}\s*\(\{dir\}\)/g, dirName)
+      .replace(/\{process\}/g, pathName)
+      .replace(/\{dir\}/g, dirName)
+      .replace(/\{path\}/g, pathName)
+      .replace(/\{pane_id\}/g, pane.pane_id)
+      .replace(/\{tab_id\}/g, pane.tab_id);
+  } else {
+    label = config.format
+      .replace(/\{process\}/g, resolution.name)
+      .replace(/\{dir\}/g, dirName)
+      .replace(/\{path\}/g, pathName)
+      .replace(/\{pane_id\}/g, pane.pane_id)
+      .replace(/\{tab_id\}/g, pane.tab_id);
+  }
 
   if (config.maxLength > 0) {
     label = truncate(label, config.maxLength);
@@ -422,10 +499,18 @@ export function loadConfig(): Config {
       ? raw.format.trim()
       : "{process}";
 
+  // Default: show the current directory/path when no process is running
+  const target = raw.target === "tab" ? "tab" : "pane";
+
   const shellIdle =
-    raw.shell_idle === "dir" || raw.shell_idle === "shell"
-      ? (raw.shell_idle as "dir" | "shell")
-      : "process";
+    raw.shell_idle === "process" || raw.shell_idle === "shell"
+      ? (raw.shell_idle as "process" | "shell")
+      : "dir";
+
+  const idlePathStyle =
+    raw.idle_path_style === "relative" || raw.idle_path_style === "compact"
+      ? (raw.idle_path_style as "relative" | "compact")
+      : "basename";
 
   const maxLength = Number.isInteger(raw.max_length)
     ? (raw.max_length as number)
@@ -436,16 +521,75 @@ export function loadConfig(): Config {
 
   return {
     format,
+    target,
     shellIdle,
+    idlePathStyle,
     maxLength,
     overwriteManual,
     includeArgs,
   };
 }
 
+function acquireSyncLock(stateDir: string | undefined): (() => void) | null {
+  if (!stateDir) return () => {};
+
+  fs.mkdirSync(stateDir, { recursive: true });
+  const lockFile = path.join(stateDir, "sync.lock");
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockFile, "wx");
+      fs.writeFileSync(fd, `${process.pid}\n`);
+      fs.closeSync(fd);
+      return () => {
+        try {
+          const owner = Number.parseInt(fs.readFileSync(lockFile, "utf8").trim(), 10);
+          if (owner === process.pid) fs.unlinkSync(lockFile);
+        } catch {
+          // Already removed or replaced.
+        }
+      };
+    } catch {
+      try {
+        const owner = Number.parseInt(fs.readFileSync(lockFile, "utf8").trim(), 10);
+        process.kill(owner, 0);
+        return null; // Another sync is in progress.
+      } catch {
+        try {
+          fs.unlinkSync(lockFile); // Recover a stale lock once.
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 export function sync(herdrBin: string = process.env.HERDR_BIN_PATH || "herdr"): void {
-  const config = loadConfig();
+  // Event/action invocations also start the watcher. This covers plugins linked
+  // while Herdr is already running (startup hooks only run on server startup).
+  if (process.env.HERDR_PLUGIN_STATE_DIR && process.env.HERDR_SOCKET_PATH) {
+    try {
+      startDaemon();
+    } catch {
+      // A failed watcher must not prevent this one-shot sync.
+    }
+  }
+
   const stateDir = process.env.HERDR_PLUGIN_STATE_DIR;
+  const releaseLock = acquireSyncLock(stateDir);
+  if (!releaseLock) return;
+
+  try {
+    syncLocked(herdrBin, stateDir);
+  } finally {
+    releaseLock();
+  }
+}
+
+function syncLocked(herdrBin: string, stateDir: string | undefined): void {
+  const config = loadConfig();
   const stateFile = stateDir ? path.join(stateDir, "labels.json") : null;
   const ownedLabels: OwnedLabels = stateFile ? readJson<OwnedLabels>(stateFile, {}) : {};
   const nextOwnedLabels: OwnedLabels = {};
@@ -477,6 +621,52 @@ export function sync(herdrBin: string = process.env.HERDR_BIN_PATH || "herdr"): 
     } catch (e) {
       throw new Error(`Failed to discover Herdr workspaces: ${e}`);
     }
+  }
+
+  if (config.target === "pane") {
+    // Pane labels are rendered as cut-outs in each split's top border.
+    for (const pane of panes) {
+      let procInfo: ProcessInfo | null = null;
+      try {
+        const pRes = callHerdr<{ process_info?: ProcessInfo }>(
+          ["pane", "process-info", "--pane", pane.pane_id],
+          herdrBin
+        );
+        procInfo = pRes.process_info || null;
+      } catch {
+        // Fall back to pane cwd/title data.
+      }
+
+      const resolution = extractProcessResolution(procInfo, pane, config);
+      const label = formatLabel(resolution, pane, config);
+      const currentLabel = pane.label || "";
+      const isOwned = !currentLabel || ownedLabels[pane.pane_id] === currentLabel;
+      if (!isOwned && !config.overwriteManual) continue;
+
+      if (label !== currentLabel) {
+        try {
+          callHerdr(["pane", "rename", pane.pane_id, label], herdrBin);
+        } catch (e) {
+          console.error(`process-name-split: failed to rename pane ${pane.pane_id}:`, e);
+          continue;
+        }
+      }
+      nextOwnedLabels[pane.pane_id] = label;
+    }
+
+    // Restore tab numbers when upgrading from the old tab-label behavior.
+    for (const tab of tabs) {
+      if (ownedLabels[tab.tab_id] === tab.label && tab.number !== undefined) {
+        try {
+          callHerdr(["tab", "rename", tab.tab_id, String(tab.number)], herdrBin);
+        } catch (e) {
+          console.error(`process-name-split: failed to restore tab ${tab.tab_id}:`, e);
+        }
+      }
+    }
+
+    if (stateFile) writeJsonAtomic(stateFile, nextOwnedLabels);
+    return;
   }
 
   for (const tab of tabs) {
@@ -531,14 +721,21 @@ export function sync(herdrBin: string = process.env.HERDR_BIN_PATH || "herdr"): 
     }
 
     // 3. Extract running process name and format tab label
-    const procName = extractProcessName(procInfo, selectedPane, config);
-    const label = formatLabel(procName, selectedPane, config);
+    const resolution = extractProcessResolution(procInfo, selectedPane, config);
+    const label = formatLabel(resolution, selectedPane, config);
 
     // 4. Respect manual renames unless overwriteManual is enabled
-    const isOwned = DEFAULT_LABEL.test(tab.label) || ownedLabels[tab.tab_id] === tab.label;
-    if (!isOwned && !config.overwriteManual) {
-      continue;
-    }
+    // Older versions could lose ownership when simultaneous focus events raced
+    // while writing labels.json. A matching pane terminal title safely recovers
+    // those generated labels on the next sync.
+    const matchesPaneTitle = tabPanes.some(
+      (pane) => pane.terminal_title_stripped === tab.label
+    );
+    const isOwned =
+      DEFAULT_LABEL.test(tab.label) ||
+      ownedLabels[tab.tab_id] === tab.label ||
+      matchesPaneTitle;
+    if (!isOwned && !config.overwriteManual) continue;
 
     if (label !== tab.label) {
       try {

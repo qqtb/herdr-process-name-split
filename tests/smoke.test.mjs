@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { sync } from "../sync.mts";
 
-test("sync() updates tabs from snapshot and process info using stub herdr binary", () => {
+test("sync() labels every pane with its process or current path", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-test-"));
   const stubHerdr = path.join(tmpDir, "herdr-stub");
   const logFile = path.join(tmpDir, "calls.log");
@@ -24,12 +24,12 @@ if (args[0] === "api" && args[1] === "snapshot") {
         workspaces: [{ workspace_id: "w1" }],
         tabs: [
           { tab_id: "w1:t1", label: "1", workspace_id: "w1" },
-          { tab_id: "w1:t2", label: "2", workspace_id: "w1" }
+          { tab_id: "w1:t2", label: "zsh", workspace_id: "w1" }
         ],
         panes: [
           { pane_id: "w1:p1", tab_id: "w1:t1", focused: false, cwd: "/home/user/code/api" },
           { pane_id: "w1:p2", tab_id: "w1:t1", focused: true, cwd: "/home/user/code/api" },
-          { pane_id: "w1:p3", tab_id: "w1:t2", focused: false, cwd: "/home/user/code/web" }
+          { pane_id: "w1:p3", tab_id: "w1:t2", focused: false, cwd: "/home/user/code/web", terminal_title_stripped: "zsh" }
         ],
         layouts: [
           { tab_id: "w1:t1", focused_pane_id: "w1:p2" },
@@ -74,6 +74,11 @@ if (args[0] === "pane" && args[1] === "process-info") {
   }
 }
 
+if (args[0] === "pane" && args[1] === "rename") {
+  process.stdout.write(JSON.stringify({ result: { pane_id: args[2], label: args[3] } }));
+  process.exit(0);
+}
+
 if (args[0] === "tab" && args[1] === "rename") {
   process.stdout.write(JSON.stringify({ result: { tab_id: args[2], label: args[3] } }));
   process.exit(0);
@@ -92,12 +97,15 @@ process.exit(0);
     sync(stubHerdr);
 
     const calls = fs.readFileSync(logFile, "utf8").trim().split("\n");
-    assert.ok(calls.includes("tab rename w1:t1 make debug-web"));
-    assert.ok(calls.includes("tab rename w1:t2 zsh"));
+    // Each split gets its own border label, regardless of which pane is focused.
+    assert.ok(calls.includes("pane rename w1:p1 api"));
+    assert.ok(calls.includes("pane rename w1:p2 make debug-web"));
+    assert.ok(calls.includes("pane rename w1:p3 web"));
 
     const state = JSON.parse(fs.readFileSync(path.join(tmpDir, "labels.json"), "utf8"));
-    assert.equal(state["w1:t1"], "make debug-web");
-    assert.equal(state["w1:t2"], "zsh");
+    assert.equal(state["w1:p1"], "api");
+    assert.equal(state["w1:p2"], "make debug-web");
+    assert.equal(state["w1:p3"], "web");
   } finally {
     process.env = oldEnv;
     fs.rmSync(tmpDir, { recursive: true, force: true });

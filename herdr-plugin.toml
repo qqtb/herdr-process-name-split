@@ -2,13 +2,16 @@ id = "process-name-split"
 name = "Process Name Split"
 version = "1.0.0"
 min_herdr_version = "0.7.0"
-description = "Show the running process name (short, informative) of the currently selected split panel inside the tab."
+description = "Show each split's current path or foreground process in its pane border."
 platforms = ["linux", "macos", "windows"]
+
+[[startup]]
+command = ["node", "daemon.mts", "start"]
 
 [[actions]]
 id = "sync"
-title = "Sync process tab names now"
-description = "Update all tab labels to the running process of the tab's selected split panel."
+title = "Sync process pane names now"
+description = "Update pane border labels to each split's current path or foreground process."
 command = ["node", "sync.mts"]
 
 [[events]]
@@ -50,7 +53,6 @@ command = ["node", "sync.mts"]
 [[events]]
 on = "pane.agent_status_changed"
 command = ["node", "sync.mts"]
-
 
 [[events]]
 on = "workspace.focused"

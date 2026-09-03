@@ -1,5 +1,5 @@
 # herdr-process-name-split: companion shell hook for bash.
-# Gives instant updates when commands start and finish inside your shell.
+# Gives instant updates when commands start, finish, or when directory changes.
 #
 # Source this file from ~/.bashrc:
 #   [[ -n "$HERDR_ENV" ]] && source /path/to/herdr-process-name-split/shell/hook.bash

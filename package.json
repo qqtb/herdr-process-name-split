@@ -1,7 +1,7 @@
 {
   "name": "herdr-process-name-split",
   "version": "1.0.0",
-  "description": "Show the running process name (short, informative) of the currently selected split panel inside each tab.",
+  "description": "Label each split border with its current path or foreground process.",
   "private": true,
   "engines": {
     "node": ">=22.18.0"
