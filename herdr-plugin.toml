@@ -51,9 +51,6 @@ command = ["node", "sync.mts"]
 on = "pane.agent_status_changed"
 command = ["node", "sync.mts"]
 
-[[events]]
-on = "layout.updated"
-command = ["node", "sync.mts"]
 
 [[events]]
 on = "workspace.focused"
